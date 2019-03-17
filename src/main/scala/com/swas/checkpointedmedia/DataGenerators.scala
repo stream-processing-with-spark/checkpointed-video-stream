@@ -1,7 +1,9 @@
 package com.swas.checkpointedmedia
 
+import java.sql.Timestamp
+
 import scala.concurrent.{ExecutionContext, Future}
-import scala.util.Try
+import scala.util.{Random, Try}
 
 // definitions of our data representation for the VideoPlayed data point and the Video Play Count
 case class VideoPlayed(videoId: String, clientId: String, timestamp: Long) {
@@ -10,21 +12,30 @@ case class VideoPlayed(videoId: String, clientId: String, timestamp: Long) {
 object VideoPlayed extends Serializable {
   def fromCsv(str: String) : Option[VideoPlayed] = {
     Try{
-      val Array(id, client, ts) = str.split(",")
+      val Array(id, client, ts) = str.split(",").map(_.trim)
       VideoPlayed(id, client, ts.toLong)
     }.toOption
   }
 }
 
-case class VideoPlayCount(videoId: String, day: Long, count: Long)
+case class VideoPlayCount(videoId: String, day: Long, count: Long) {
+  override def toString = {
+    val ts = new Timestamp(day)
+    s"$videoId, $ts, $count"
+  }
+}
 
 object DataGenerators extends Serializable {
 
   val ServerPort = 9999
+  val TotalVideoIds = 1000
+  val TotalUserIds = 100000
+  val MaxVideoHitsGenerated = 250
+  val MaxGenerationDelayMs = 100
 
   // Some ad-hoc data to generate random data points
-  val videos = (1 to 1000).map(i => s"video-$i")
-  val clients = (1 to 100000).map(i => s"user-$i")
+  val videos = (1 to TotalVideoIds).map(i => s"video-$i")
+  val clients = (1 to TotalUserIds).map(i => s"user-$i")
 
   import scala.util.Random
   // generic function to get a random value out of a sequence
@@ -34,7 +45,7 @@ object DataGenerators extends Serializable {
   val randomUser: () => String = () => randomValueFrom(clients)
   // videoHit generating function for a random number of hits
   val randomVideoHits: () => Seq[VideoPlayed] = () => {
-    (1 to Random.nextInt(1000)).map{
+    (1 to Random.nextInt(MaxVideoHitsGenerated)).map{
       i => VideoPlayed(randomVideo(), randomUser(), System.currentTimeMillis + i*60000)
     }
   }
@@ -47,16 +58,16 @@ object DataGenerators extends Serializable {
       Future {
         while (!out.checkError()) {
           val videoHits = randomVideoHits()
-          println(s"Delivering ${videoHits.size} video hits")
           videoHits.foreach(hit => out.println(hit.toCsv))
+          Thread.sleep(Random.nextInt(MaxGenerationDelayMs).toLong)
           out.flush()
         }
       }
     }
 
     def deliverData(socket: Socket): Future[Unit] = {
-      val out = new PrintStream(socket.getOutputStream())
-      deliver(out)
+      println(s"Connected to client $socket")
+      deliver(new PrintStream(socket.getOutputStream()))
     }
 
     Future {

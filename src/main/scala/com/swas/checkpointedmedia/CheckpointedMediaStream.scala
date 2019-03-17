@@ -1,13 +1,13 @@
 package com.swas.checkpointedmedia
 
+import java.sql.Timestamp
+
 import org.apache.spark.streaming._
-import org.apache.spark.rdd.RDD
 import org.apache.spark.SparkContext
 import org.apache.spark.sql.SparkSession
+import org.apache.spark.storage.StorageLevel
 
 object CheckpointedMediaStream {
-
-  import DataGenerators._
 
   //
   val MillisInAnHour = Minutes(60).milliseconds
@@ -35,13 +35,16 @@ object CheckpointedMediaStream {
     sparkContext.setLogLevel("WARN")
     // sets the checkpoint directory
     streamingContext.checkpoint(checkpointDir)
-    //This is a self-contained input stream definition, which generates data points in memory
-    // And does not require setting up and consuming data from an external stream
-    import org.apache.spark.streaming.dstream.ConstantInputDStream
 
-    val stream  = new ConstantInputDStream(streamingContext, sparkContext.makeRDD(Seq(randomVideoHits)))
+    // This setup is only for local running.
+    // In particular, the storage level is set for no replication.
+    val stream  = streamingContext.socketTextStream("localhost", 9999, StorageLevel.MEMORY_AND_DISK)
+    // print the amount of data received on each micro-batch
+    stream.count()
+
     // Materialize the data function generator
-    val videoPlayedDStream  = stream.flatMap(gen => gen())
+    val videoPlayedDStream  = stream.flatMap(textLine => VideoPlayed.fromCsv(textLine))
+
     val checkpointedVideoPlayedDStream = videoPlayedDStream.checkpoint(Seconds(60))
 
     import org.apache.spark.streaming._
@@ -60,8 +63,11 @@ object CheckpointedMediaStream {
     // print the top-10 highest values
     videoHitsPerHour.foreachRDD{ ( rdd, time ) =>
       val top10 = rdd.top(10)(Ordering[Long].on((v: VideoPlayCount) => v.count))
-      println(s"Top 10 at time $time")
+      val currentTimestamp = new Timestamp(time.milliseconds)
+      println(s"Top 10 at time $currentTimestamp")
+      println("=========================")
       top10.foreach(videoCount => println(videoCount))
+      println("=========================")
     }
     // return the created streaming context
     streamingContext
@@ -71,6 +77,10 @@ object CheckpointedMediaStream {
 
     // this is our checkpoint location. In a cluster, set it to a location reachable from the driver and executors
     val CheckpointDir = "/tmp/streaming"
+
+    // start the built-in TCP server
+    import scala.concurrent.ExecutionContext.Implicits.global
+    DataGenerators.builtInTCPServer()
 
     val spark = SparkSession.builder()
       .master("local[2]")
